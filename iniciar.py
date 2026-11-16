@@ -5,13 +5,16 @@
 Faz, na ordem, apenas o que falta:
 
 1. descobre o mes mais recente (servidor ou dados locais);
-2. baixa os Estabelecimentos*.zip e o Municipios.zip que faltam;
-3. confere tamanho e abertura dos zips;
+2. baixa os Estabelecimentos*.zip, o Municipios.zip e o Cnaes.zip que faltam;
+3. confere tamanho e abertura dos zips e extrai o CNAE;
 4. monta o banco SQLite (sem indices) e depois cria os indices;
 5. abre a interface de consulta.
 
 Se o banco do mes ja estiver completo, nao pergunta nada: so abre a interface.
 Se houver download a fazer, pergunta antes e mostra uma estimativa de tempo.
+Quando a Receita publica uma pasta de mes nova, avisa, pede permissao para
+baixar e oferece uma caixa para apagar os meses anteriores (a exclusao so
+acontece depois que o novo banco estiver pronto).
 
 Uso:
     python iniciar.py
@@ -84,12 +87,61 @@ def fmt_tempo(minutos):
 
 # ------------------------------------------------------------------- estado
 def meses_locais():
+    """Meses com zips ou banco em dados/ (um banco sozinho tambem conta)."""
     if not DADOS.exists():
         return []
-    return sorted(
+    meses = {
         pasta.name for pasta in DADOS.iterdir()
         if pasta.is_dir() and re.fullmatch(r"\d{4}-\d{2}", pasta.name)
-    )
+    }
+    for caminho in DADOS.glob("cnpj-*.db"):
+        achado = re.fullmatch(r"cnpj-(\d{4}-\d{2})\.db", caminho.name)
+        if achado:
+            meses.add(achado.group(1))
+    return sorted(meses)
+
+
+def meses_antigos(mes_atual):
+    return [mes for mes in meses_locais() if mes != mes_atual]
+
+
+def arquivos_do_mes(mes):
+    """Zips, banco e estado que pertencem a um mes local."""
+    if not re.fullmatch(r"\d{4}-\d{2}", mes or ""):
+        return []
+    caminhos = []
+    pasta = DADOS / mes
+    if pasta.exists():
+        caminhos.extend(c for c in pasta.rglob("*") if c.is_file())
+    for padrao in (f"cnpj-{mes}.json", f"cnpj-{mes}.json.tmp", f"cnpj-{mes}.db*"):
+        caminhos.extend(c for c in DADOS.glob(padrao) if c.is_file())
+    return list(dict.fromkeys(caminhos))
+
+
+def tamanho_mes(mes):
+    total = 0
+    for caminho in arquivos_do_mes(mes):
+        try:
+            total += caminho.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def apagar_mes(mes):
+    """Apaga a pasta, o banco e o estado de um mes. Retorna os bytes liberados."""
+    if not re.fullmatch(r"\d{4}-\d{2}", mes or ""):
+        raise ValueError(f"mes invalido: {mes!r}")
+    liberado = tamanho_mes(mes)
+    pasta = DADOS / mes
+    if pasta.exists():
+        shutil.rmtree(pasta)
+    for caminho in arquivos_do_mes(mes):
+        try:
+            caminho.unlink()
+        except FileNotFoundError:
+            pass
+    return liberado
 
 
 def ordem_arquivo(nome):
@@ -292,8 +344,12 @@ def espaco_livre_gb():
     return shutil.disk_usage(base).free / 1e9
 
 
-def avaliar():
-    """Estado atual: o que baixar, o que montar e quanto tempo deve levar."""
+def avaliar(mes_preferido=None):
+    """Estado atual: o que baixar, o que montar e quanto tempo deve levar.
+
+    `mes_preferido` forca um mes local (usado quando o usuario decide
+    continuar no mes antigo em vez de baixar a pasta nova).
+    """
     mensagens = []
     remoto_ok = False
     mes_remoto = None
@@ -303,12 +359,15 @@ def avaliar():
     except Exception as erro:
         mensagens.append(f"Servidor indisponivel: {erro}")
 
-    mes_local = meses_locais()[-1] if meses_locais() else None
+    locais = meses_locais()
+    mes_local = locais[-1] if locais else None
+    if mes_preferido and mes_preferido not in locais:
+        mes_preferido = None
     if not mes_remoto and not mes_local:
         raise RuntimeError(
             "Sem dados locais e sem acesso ao servidor. Verifique a internet e tente de novo.")
 
-    mes = max(m for m in (mes_remoto, mes_local) if m)
+    mes = mes_preferido or max(m for m in (mes_remoto, mes_local) if m)
     pasta = DADOS / mes
     itens_remotos = None
     if remoto_ok:
@@ -317,14 +376,33 @@ def avaliar():
         except Exception as erro:
             mensagens.append(f"Nao consegui listar {mes} no servidor: {erro}")
 
+    novo_mes = bool(
+        not mes_preferido and remoto_ok and itens_remotos
+        and mes_remoto and mes_local and mes_remoto > mes_local)
+
     if remoto_ok and mes == mes_remoto and itens_remotos:
         itens = itens_remotos
     else:
         itens = itens_locais(pasta)
+        avisou_local = False
+        if not itens and mes_local and mes != mes_local:
+            # O mes remoto nao pode ser listado/baixado agora: cai para o
+            # ultimo mes local completo em vez de terminar em erro.
+            mes = mes_local
+            pasta = DADOS / mes
+            itens = itens_locais(pasta)
+            novo_mes = False
+            avisou_local = True
+            mensagens.append(f"Usando os dados locais de {mes}.")
         if not itens:
-            raise RuntimeError(
-                f"Nao ha Estabelecimentos*.zip em {pasta} e o servidor nao esta disponivel.")
-        if remoto_ok:
+            if inspecionar_db(caminho_db(mes), contar=False).get("ok"):
+                mensagens.append(
+                    f"Sem zips de {mes}; usando o banco que ja esta em "
+                    f"{caminho_db(mes).name}.")
+            else:
+                raise RuntimeError(
+                    f"Nao ha Estabelecimentos*.zip em {pasta} e o servidor nao esta disponivel.")
+        if remoto_ok and mes != mes_remoto and not avisou_local:
             mensagens.append(f"Usando os dados locais de {mes}.")
 
     partes = list(pasta.glob("*.part")) if pasta.exists() else []
@@ -384,11 +462,15 @@ def avaliar():
             pasta / "Cnaes.zip").exists():
         mensagens.append(
             "Cnaes.zip/CNAE.CNAECSV ausente: a interface nao mostrara descricoes de CNAE.")
-    if not (pasta / "Municipios.zip").exists() and not falta_municipios:
+    if (not (pasta / "Municipios.zip").exists() and not falta_municipios
+            and not info.get("municipios")):
         mensagens.append(
             "Municipios.zip ausente: o filtro de municipio usara apenas o codigo.")
 
     pronto = not faltam and not precisa_carga and not precisa_indices
+
+    antigos = meses_antigos(mes)
+    bytes_antigos = sum(tamanho_mes(antigo) for antigo in antigos)
 
     # Registra o estado de um banco que ja existia (inclusive o banco completo
     # criado fora deste assistente), para as proximas execucoes serem rapidas.
@@ -399,6 +481,11 @@ def avaliar():
 
     return {
         "mes": mes,
+        "mes_remoto": mes_remoto,
+        "mes_local": mes_local,
+        "novo_mes": novo_mes,
+        "meses_antigos": antigos,
+        "bytes_antigos": bytes_antigos,
         "pasta": str(pasta),
         "db": str(db),
         "itens": itens,
@@ -467,7 +554,7 @@ def verificar_zips(pasta, itens, remoto, fila):
         fila.put(("log", f"{item['nome']}: ok"))
 
 
-def executar(estado, baixar_agora, fila):
+def executar(estado, baixar_agora, fila, apagar_antigos=False):
     mes = estado["mes"]
     pasta = Path(estado["pasta"])
     db = Path(estado["db"])
@@ -488,13 +575,16 @@ def executar(estado, baixar_agora, fila):
             itens_verificar = estado["itens"]
         else:
             itens_verificar = itens_locais(pasta)
-        if not any(item["nome"].startswith("Estabelecimentos")
-                   for item in itens_verificar):
+        tem_estabelecimentos = any(
+            item["nome"].startswith("Estabelecimentos") for item in itens_verificar)
+        if tem_estabelecimentos:
+            fila.put(("status", "Conferindo os arquivos baixados..."))
+            verificar_zips(pasta, itens_verificar, estado["remoto"], fila)
+        elif not inspecionar_db(db, contar=False).get("ok"):
             raise RuntimeError(
                 "Nao ha Estabelecimentos*.zip no disco. Baixe os dados para continuar.")
-
-        fila.put(("status", "Conferindo os arquivos baixados..."))
-        verificar_zips(pasta, itens_verificar, estado["remoto"], fila)
+        else:
+            fila.put(("log", "Sem zips locais; usando o banco que ja existe."))
         if extrair_cnae(pasta, CNAE):
             fila.put(("log", "CNAE.CNAECSV atualizado a partir de Cnaes.zip."))
 
@@ -558,18 +648,32 @@ def executar(estado, baixar_agora, fila):
             arquivos_estado = estado_db.get("arquivos") or arquivos
             salvar_estado(mes, arquivos_estado, linhas, concluido=True)
 
-    fila.put(("status", "Tudo pronto."))
     if linhas is None:
         linhas = 0
     fila.put(("log", f"Banco pronto: {db} ({linhas:,} linhas)".replace(",", ".")))
+
+    # A exclusao dos meses antigos so acontece depois que o banco novo esta
+    # pronto: se o download/carga falhar, os dados antigos continuam no disco.
+    if apagar_antigos:
+        antigos = [m for m in estado.get("meses_antigos", []) if m != mes]
+        if antigos:
+            fila.put(("status", "Apagando os meses anteriores..."))
+        for antigo in antigos:
+            try:
+                liberado = apagar_mes(antigo)
+            except OSError as erro:
+                fila.put(("log", f"Nao consegui apagar {antigo}: {erro}"))
+                continue
+            fila.put(("log", f"Apagado {antigo}: {fmt_bytes(liberado)} liberados."))
+
+    fila.put(("status", "Tudo pronto."))
     fila.put(("pronto", str(db)))
 
 
 # ---------------------------------------------------------------------- GUI
-def montar_texto(estado):
-    """Texto da pergunta com a estimativa de tempo."""
+def linhas_estimativa(estado):
     est = estado["estimativa"]
-    linhas = [f"Mes: {estado['mes']}", ""]
+    linhas = []
     if estado["faltam_bytes"]:
         linhas.append(f"Faltam {fmt_bytes(estado['faltam_bytes'])} para baixar.")
     if est["min_download"]:
@@ -580,15 +684,104 @@ def montar_texto(estado):
         linhas.append(f"Criacao dos indices: {fmt_tempo(est['min_indices'])}")
     if est["min_total"]:
         linhas.append(f"Total estimado: {fmt_tempo(est['min_total'])}")
-    if estado["faltam_estab"]:
+    if estado.get("faltam_estab"):
         linhas.append("")
         linhas.append("Ha um shard novo: o banco sera recriado depois do download.")
-    if estado["falta_municipios"]:
+    if estado.get("falta_municipios"):
         linhas.append("Falta o Municipios.zip: a tabela de municipios sera completada.")
+    return linhas
+
+
+def montar_texto(estado):
+    """Texto da pergunta com a estimativa de tempo."""
+    linhas = [f"Mes: {estado['mes']}", ""]
+    linhas += linhas_estimativa(estado)
     if estado["mensagens"]:
         linhas += [""] + estado["mensagens"]
     linhas += ["", "O tempo varia com a conexao e o disco. Pegue um cafe e deixe rodando."]
     return "\n".join(linhas)
+
+
+def montar_texto_novo_mes(estado):
+    """Aviso de pasta nova, com a estimativa e a opcao de apagar as antigas."""
+    linhas = [f"A Receita Federal publicou a nova pasta {estado['mes_remoto']}."]
+    if estado.get("mes_local"):
+        linhas.append(f"Sua copia local mais recente e {estado['mes_local']}.")
+    linhas += ["", f"Mes: {estado['mes']}", ""]
+    linhas += linhas_estimativa(estado)
+    if estado.get("mensagens"):
+        linhas += [""] + estado["mensagens"]
+    if estado.get("meses_antigos"):
+        linhas += [
+            "",
+            f"A caixa abaixo permite apagar {', '.join(estado['meses_antigos'])} "
+            f"({fmt_bytes(estado['bytes_antigos'])}). A exclusao so acontece depois "
+            "que o novo banco estiver pronto.",
+            "Sem marcar a caixa, os meses antigos continuam no disco.",
+        ]
+    linhas += ["", "O tempo varia com a conexao e o disco. Pegue um cafe e deixe rodando."]
+    return "\n".join(linhas)
+
+
+class DialogoNovoMes(tk.Toplevel):
+    """Aviso de pasta nova, com a caixa de apagar os meses anteriores."""
+
+    def __init__(self, master, estado):
+        super().__init__(master)
+        self.resultado = None
+        self.apagar = tk.BooleanVar(value=False)
+        self.title("Nova pasta na Receita Federal")
+        self.resizable(True, False)
+        self.transient(master)
+        self.protocol("WM_DELETE_WINDOW", self.sair)
+
+        corpo = ttk.Frame(self, padding=14)
+        corpo.pack(fill="both", expand=True)
+        ttk.Label(corpo, text="Nova pasta na Receita Federal",
+                  font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+        ttk.Label(corpo, text=montar_texto_novo_mes(estado), justify="left",
+                  wraplength=640).pack(anchor="w", pady=(8, 10))
+
+        rotulo = "Apagar os meses anteriores depois que o novo banco estiver pronto"
+        if estado["meses_antigos"]:
+            rotulo += (f" ({', '.join(estado['meses_antigos'])}; "
+                       f"libera {fmt_bytes(estado['bytes_antigos'])})")
+        self.chk = ttk.Checkbutton(corpo, text=rotulo, variable=self.apagar)
+        self.chk.pack(anchor="w")
+        if not estado["meses_antigos"]:
+            self.chk.state(["disabled"])
+
+        botoes = ttk.Frame(corpo)
+        botoes.pack(fill="x", pady=(14, 0))
+        texto_baixar = ("Baixar e preparar" if estado["faltam_bytes"]
+                        else "Preparar o banco")
+        ttk.Button(botoes, text=texto_baixar,
+                   command=self.baixar).pack(side="right")
+        if estado.get("mes_local") and estado["mes_local"] != estado["mes"]:
+            ttk.Button(botoes, text=f"Continuar com {estado['mes_local']}",
+                       command=self.usar_antigo).pack(side="right", padx=6)
+        ttk.Button(botoes, text="Sair", command=self.sair).pack(side="left")
+
+        self.bind("<Escape>", lambda _evento: self.sair())
+        self.update_idletasks()
+        largura, altura = self.winfo_width(), self.winfo_height()
+        x = master.winfo_rootx() + max(0, (master.winfo_width() - largura) // 2)
+        y = master.winfo_rooty() + max(0, (master.winfo_height() - altura) // 3)
+        self.geometry(f"+{x}+{y}")
+        self.grab_set()
+        self.wait_window(self)
+
+    def baixar(self):
+        self.resultado = "baixar"
+        self.destroy()
+
+    def usar_antigo(self):
+        self.resultado = "antigo"
+        self.destroy()
+
+    def sair(self):
+        self.resultado = None
+        self.destroy()
 
 
 class Aplicativo:
@@ -662,18 +855,20 @@ class Aplicativo:
         self.raiz.after(100, self.processar_fila)
 
     # ------------------------------------------------------------- estados
-    def verificar(self):
+    def verificar(self, mes_preferido=None):
         if self.trabalhando:
             return
         self.trabalhando = True
         self.var_status.set("Verificando dados locais e servidor...")
         self.progresso.start(12)
         self.btn_verificar.config(state="disabled")
-        threading.Thread(target=self._verificar_worker, daemon=True).start()
+        threading.Thread(
+            target=self._verificar_worker, args=(mes_preferido,),
+            daemon=True).start()
 
-    def _verificar_worker(self):
+    def _verificar_worker(self, mes_preferido=None):
         try:
-            self.fila.put(("estado", avaliar()))
+            self.fila.put(("estado", avaliar(mes_preferido)))
         except Exception as erro:
             self.fila.put(("erro", str(erro)))
 
@@ -683,6 +878,10 @@ class Aplicativo:
         self.btn_verificar.config(state="normal")
         for mensagem in estado["mensagens"]:
             self.registrar(mensagem)
+        if estado.get("novo_mes"):
+            self.registrar(
+                f"Nova pasta na Receita Federal: {estado['mes_remoto']} "
+                f"(sua copia local mais recente e {estado['mes_local']}).")
         if estado["pronto"]:
             self.btn_verificar.config(state="disabled")
             self.var_status.set("Tudo pronto. Abrindo a interface...")
@@ -692,7 +891,22 @@ class Aplicativo:
             return
         self.perguntar(estado)
 
+    def perguntar_novo_mes(self, estado):
+        dialogo = DialogoNovoMes(self.raiz, estado)
+        if dialogo.resultado == "antigo" and estado.get("mes_local"):
+            self.registrar(f"Continuando com o mes local {estado['mes_local']}.")
+            self.verificar(estado["mes_local"])
+            return
+        if dialogo.resultado != "baixar":
+            self.fechar()
+            return
+        self.iniciar_trabalho(
+            estado, bool(estado["faltam_bytes"]), dialogo.apagar.get())
+
     def perguntar(self, estado):
+        if estado.get("novo_mes"):
+            self.perguntar_novo_mes(estado)
+            return
         texto = montar_texto(estado)
         if estado["faltam_bytes"]:
             resposta = messagebox.askyesnocancel(
@@ -705,11 +919,13 @@ class Aplicativo:
                 self.fechar()
                 return
             if not resposta:
-                if not any(item["nome"].startswith("Estabelecimentos")
-                           for item in itens_locais(Path(estado["pasta"]))):
+                tem_zips = any(
+                    item["nome"].startswith("Estabelecimentos")
+                    for item in itens_locais(Path(estado["pasta"])))
+                if not tem_zips and not estado.get("info", {}).get("ok"):
                     messagebox.showerror(
                         "Sem dados",
-                        "Nao ha Estabelecimentos*.zip no disco. "
+                        "Nao ha Estabelecimentos*.zip nem banco pronto no disco. "
                         "Baixe os dados ou cancele.")
                     self.var_status.set("Nenhum dado local para usar.")
                     return
@@ -720,20 +936,24 @@ class Aplicativo:
                 return
             self.iniciar_trabalho(estado, False)
 
-    def iniciar_trabalho(self, estado, baixar_agora):
+    def iniciar_trabalho(self, estado, baixar_agora, apagar_antigos=False):
         self.trabalhando = True
         self.var_status.set("Trabalhando...")
         self.progresso.start(12)
         self.btn_verificar.config(state="disabled")
         self.registrar("")
         self.registrar("=== Iniciando ===")
+        if apagar_antigos:
+            self.registrar(
+                "Os meses anteriores serao apagados depois que o novo banco ficar pronto.")
         threading.Thread(
-            target=self._executar_worker, args=(estado, baixar_agora),
-            daemon=True).start()
+            target=self._executar_worker,
+            args=(estado, baixar_agora, apagar_antigos), daemon=True).start()
 
-    def _executar_worker(self, estado, baixar_agora):
+    def _executar_worker(self, estado, baixar_agora, apagar_antigos=False):
         try:
-            executar(estado, baixar_agora, self.fila)
+            executar(estado, baixar_agora, self.fila,
+                     apagar_antigos=apagar_antigos)
         except BaseException as erro:
             self.fila.put(("log", traceback.format_exc()))
             self.fila.put(("erro", str(erro)))
@@ -791,6 +1011,11 @@ def main():
             return 1
         resumo = {
             "mes": estado["mes"],
+            "mes_remoto": estado["mes_remoto"],
+            "mes_local": estado["mes_local"],
+            "novo_mes": estado["novo_mes"],
+            "meses_antigos": estado["meses_antigos"],
+            "bytes_antigos": estado["bytes_antigos"],
             "pronto": estado["pronto"],
             "db": estado["db"],
             "linhas": estado["info"].get("linhas") or estado["estado"].get("linhas"),

@@ -37,6 +37,27 @@ Na primeira execução o `iniciar.py`:
 Se o banco do mês já estiver completo, ele não pergunta nada: abre a interface.
 Se um shard novo aparecer no servidor, baixa o que falta e recria o banco.
 
+## Quando a Receita publica um mês novo
+
+Se o servidor tiver uma pasta `AAAA-MM` mais recente que a sua cópia local
+(ex.: `2026-11` quando você tem `2026-10`), o `iniciar.py`:
+
+1. avisa no log e abre uma janela **“Nova pasta na Receita Federal”**;
+2. mostra a estimativa de download, carga e índices;
+3. oferece **“Baixar e preparar”**, **“Continuar com 2026-10”** (abre o banco
+   antigo sem baixar nada) e **“Sair”**;
+4. tem uma caixa, **desmarcada por padrão**, para apagar os meses anteriores.
+   A exclusão só acontece **depois que o novo banco estiver pronto**; se o
+   download ou a carga falhar, os meses antigos continuam no disco.
+
+Apagar os meses antigos libera espaço (o mês completo ocupa ~37 GB, somando
+zips + banco). Se a caixa ficar desmarcada, os meses antigos são preservados.
+
+A detecção considera tanto as pastas `AAAA-MM/` quanto os bancos
+`cnpj-AAAA-MM.db`. Se você apagou só os zips e manteve o banco, o mês antigo
+continua aparecendo: dá para abri-lo em **“Continuar com AAAA-MM”** e, depois
+do novo banco pronto, apagar o banco antigo pela caixa de seleção.
+
 ## O que fica no disco
 
 | Caminho | Conteúdo |
@@ -121,6 +142,13 @@ carregador usa zips sintéticos.
   banco corretos.
 - **Banco desatualizado / shard novo** → o `iniciar.py` detecta e recria; ou
   apague `dados/cnpj-AAAA-MM.db` e `dados/cnpj-AAAA-MM.json` e rode de novo.
+- **Quer voltar para o mês anterior** → na janela de pasta nova escolha
+  **“Continuar com AAAA-MM”**; nada é baixado nem apagado. Isso funciona mesmo
+  que os zips do mês antigo tenham sido apagados, desde que o `.db` exista.
+- **Apagou só a pasta de zips** → o banco `cnpj-AAAA-MM.db` continua sendo
+  reconhecido como um mês local; a interface abre normalmente.
+- **Apagou o mês errado?** → os dados são públicos e o `iniciar.py` baixa de
+  novo; a exclusão nunca toca no mês que está sendo preparado.
 - **Pouco espaço** → o mês completo pede ~50 GB; o `iniciar.py` avisa antes.
 - **A interface não abre** → rode
   `python -m cnpjs.interface --db dados/cnpj-AAAA-MM.db` no terminal para ver o

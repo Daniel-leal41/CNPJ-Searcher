@@ -32,6 +32,13 @@ python -m cnpjs.interface --db dados/cnpj-2026-10.db
   `preparar`, grava `dados/cnpj-<mes>.json` e abre a interface em subprocesso.
   Se o JSON nao bate com os zips locais, renomeia o banco para `.bak-*` e
   recria (o backup e apagado no sucesso).
+  Se o servidor tiver um mes mais novo que o ultimo local (`novo_mes`), avisa
+  na GUI e abre `DialogoNovoMes`: pergunta antes de baixar, oferece continuar
+  no mes antigo (`avaliar(mes_preferido=...)`) e tem uma caixa **desmarcada**
+  para apagar os meses anteriores. A exclusao (`apagar_mes`) ocorre somente
+  depois que o banco novo esta pronto; falha no download/carga preserva tudo.
+  `meses_locais` conta pasta `AAAA-MM/` **ou** `cnpj-AAAA-MM.db`; `avaliar` e
+  `executar` seguem com o banco completo mesmo sem os zips (`Continuar com`).
 - `cnpjs/baixar.py`: Nextcloud publico via WebDAV (`PROPFIND` + `GET` em
   `/public.php/dav/files/<TOKEN>/...`). `--mes latest` ordena pastas
   `AAAA-MM`; baixa o que falta comparando tamanho; retoma `.part` com `Range`.
@@ -97,6 +104,9 @@ python -m cnpjs.interface --db dados/cnpj-2026-10.db
 - Sem `Municipios.zip` na pasta, nao ha tabela `municipios`; a interface
   desabilita o filtro de municipio e mostra o codigo. Rode `--preparar` com a
   pasta que tem o arquivo.
+- `apagar_mes` so aceita `AAAA-MM` (protege contra `..`) e apaga a pasta do
+  mes, o `cnpj-<mes>.db*` e o `cnpj-<mes>.json*`. Nunca chame antes do sucesso
+  da carga: e a rede de seguranca para nao perder o mes antigo.
 - Os indices parciais de e-mail/telefone casam com as expressoes exatas
   `email IS NOT NULL` e `COALESCE(telefone1, telefone2, telefone3) IS NOT NULL`;
   mudar o filtro sem mudar o indice perde a otimizacao.
