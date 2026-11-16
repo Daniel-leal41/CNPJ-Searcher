@@ -567,7 +567,11 @@ def executar(estado, baixar_agora, fila, apagar_antigos=False):
                     continue
                 fila.put(("status",
                           f"Baixando {item['nome']} ({numero}/{total})..."))
-                baixar.baixar_arquivo(item["nome"], mes=mes, destino=str(DADOS))
+                if item.get("href"):
+                    # Usa o item ja listado: nao faz PROPFIND de novo por arquivo.
+                    baixar.baixar_item(item, mes=mes, destino=str(DADOS))
+                else:
+                    baixar.baixar_arquivo(item["nome"], mes=mes, destino=str(DADOS))
         elif estado["faltam_bytes"]:
             fila.put(("log", "Download ignorado; usando somente os arquivos locais."))
 

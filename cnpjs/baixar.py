@@ -19,6 +19,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urljoin
 from urllib.request import Request, urlopen
 
@@ -37,11 +38,7 @@ def _abrir(url, metodo="GET", cabecalhos=None):
     return urlopen(req, timeout=60)
 
 
-def _listar_dav(caminho):
-    """Itens de um diretorio: [{nome, tamanho, href, pasta}]."""
-    with _abrir(f"{BASE}/{quote(caminho.strip('/'))}/", "PROPFIND", {"Depth": "1"}) as resposta:
-        xml = resposta.read()
-
+def _itens_dav(xml):
     itens = []
     for no in ET.fromstring(xml).findall("{DAV:}response"):
         href = unquote(no.findtext("{DAV:}href") or "")
@@ -57,6 +54,35 @@ def _listar_dav(caminho):
                 "pasta": props.find("{DAV:}resourcetype/{DAV:}collection") is not None,
             })
     return itens
+
+
+def _listar_dav(caminho):
+    """Itens de um diretorio: [{nome, tamanho, href, pasta}].
+
+    O servidor as vezes devolve uma resposta vazia ou um XML invalido; nesse
+    caso tenta de novo e, no fim, levanta um IOError com o nome do diretorio
+    em vez de deixar vazar um ParseError.
+    """
+    url = f"{BASE}/{quote(caminho.strip('/'))}/"
+    ultimo = None
+    for tentativa in range(1, TENTATIVAS + 1):
+        try:
+            with _abrir(url, "PROPFIND", {"Depth": "1"}) as resposta:
+                xml = resposta.read()
+            if not xml.strip():
+                raise IOError("resposta vazia do servidor")
+            return _itens_dav(xml)
+        except HTTPError as erro:
+            if erro.code < 500 and erro.code != 429:
+                raise IOError(
+                    f"o servidor respondeu {erro.code} ao listar {caminho}") from erro
+            ultimo = erro
+        except (OSError, ET.ParseError) as erro:
+            ultimo = erro
+        if tentativa < TENTATIVAS:
+            print(f"listar {caminho}: {ultimo}; tentando de novo em {tentativa}s")
+            time.sleep(tentativa)
+    raise IOError(f"nao consegui listar {caminho} no servidor: {ultimo}")
 
 
 def ultimo_mes():
@@ -132,6 +158,12 @@ def baixar_arquivo(nome, mes=None, destino=DESTINO):
     item = next((i for i in listar(mes) if i["nome"] == nome), None)
     if item is None:
         raise ValueError(f"{nome} nao existe em {mes}")
+    return _baixar_com_retry(item, Path(destino) / mes)
+
+
+def baixar_item(item, mes=None, destino=DESTINO):
+    """Baixa um item ja listado, sem repetir o PROPFIND da pasta."""
+    mes = mes or ultimo_mes()
     return _baixar_com_retry(item, Path(destino) / mes)
 
 

@@ -138,6 +138,10 @@ carregador usa zips sintéticos.
   `TOKEN` em `cnpjs/baixar.py`.
 - **Download interrompido** → rode `python iniciar.py` novamente; o `.part` é
   retomado com `Range`.
+- **“resposta vazia” / `ParseError` ao listar** → o servidor devolveu um
+  `PROPFIND` vazio. O `iniciar.py` tenta de novo automaticamente e, se
+  persistir, mostra “nao consegui listar …”. Confira internet/proxy e rode de
+  novo; o download reutiliza a listagem e não repete o `PROPFIND` por arquivo.
 - **Banco sem índices ou sem municípios** → rode `--preparar` com a pasta e o
   banco corretos.
 - **Banco desatualizado / shard novo** → o `iniciar.py` detecta e recria; ou

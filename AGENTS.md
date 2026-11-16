@@ -42,6 +42,9 @@ python -m cnpjs.interface --db dados/cnpj-2026-10.db
 - `cnpjs/baixar.py`: Nextcloud publico via WebDAV (`PROPFIND` + `GET` em
   `/public.php/dav/files/<TOKEN>/...`). `--mes latest` ordena pastas
   `AAAA-MM`; baixa o que falta comparando tamanho; retoma `.part` com `Range`.
+  `_listar_dav` repete o `PROPFIND` quando vem resposta vazia/XML invalido (o
+  servidor as vezes faz isso) e `baixar_item` baixa usando o `href` ja listado,
+  sem refazer o `PROPFIND` por arquivo; `iniciar.py` usa `baixar_item`.
 - `cnpjs/inspecionar.py`: le so os primeiros 256 KB de cada zip remoto e
   descomprime em memoria. Importa o modulo (`from . import baixar`) e usa
   `baixar.HOST` em tempo de chamada; nao troque por `from .baixar import HOST`.

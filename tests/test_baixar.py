@@ -9,6 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote, unquote
 
 from cnpjs import baixar as app
@@ -18,9 +19,10 @@ PREFIXO = f"/public.php/dav/files/{TOKEN}/Dados/Cadastros/CNPJ/"
 
 
 class ServidorFalso(BaseHTTPRequestHandler):
-    arquivos = {}      # "2026-10/Cnaes.zip" -> bytes
-    pastas = set()     # {"2026-10"}
-    requisicoes = []   # (metodo, caminho, Range)
+    arquivos = {}         # "2026-10/Cnaes.zip" -> bytes
+    pastas = set()        # {"2026-10"}
+    requisicoes = []      # (metodo, caminho, Range)
+    falhas_propfind = 0   # proximas N listagens voltam vazias
 
     def log_message(self, *args):
         pass
@@ -35,6 +37,12 @@ class ServidorFalso(BaseHTTPRequestHandler):
     def do_PROPFIND(self):
         caminho = unquote(self.path)
         self.requisicoes.append(("PROPFIND", caminho, None))
+        if ServidorFalso.falhas_propfind > 0:
+            ServidorFalso.falhas_propfind -= 1
+            self.send_response(207)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if not caminho.startswith(PREFIXO):
             return self.send_error(404)
         resto = caminho[len(PREFIXO):].strip("/")
@@ -96,6 +104,7 @@ class TestBaixarCnpj(unittest.TestCase):
         ServidorFalso.arquivos = {}
         ServidorFalso.pastas = set()
         ServidorFalso.requisicoes = []
+        ServidorFalso.falhas_propfind = 0
         self._tmp = tempfile.TemporaryDirectory()
         self.destino = Path(self._tmp.name)
 
@@ -188,6 +197,33 @@ class TestBaixarCnpj(unittest.TestCase):
         self.assertEqual(baixados, ["Grande.zip"])
         self.assertEqual((pasta / "Grande.zip").read_bytes(), dados)
         self.assertIn("bytes=4096-", [r[2] for r in ServidorFalso.requisicoes if r[0] == "GET"])
+
+    def test_baixar_item_nao_relista_a_pasta(self):
+        self.publicar("2026-10", "Cnaes.zip", b"cnaes")
+        item = self.rodar(app.listar, "2026-10")[0]
+        ServidorFalso.requisicoes = []
+
+        caminho = self.rodar(app.baixar_item, item, "2026-10", self.destino)
+
+        self.assertEqual(caminho.read_bytes(), b"cnaes")
+        self.assertEqual([r[0] for r in ServidorFalso.requisicoes], ["GET"])
+
+    def test_listar_retenta_resposta_vazia(self):
+        self.publicar("2026-10", "Cnaes.zip", b"cnaes")
+        ServidorFalso.falhas_propfind = 1
+        with patch.object(app.time, "sleep", lambda _segundos: None):
+            itens = self.rodar(app.listar, "2026-10")
+        self.assertEqual([item["nome"] for item in itens], ["Cnaes.zip"])
+        self.assertEqual(ServidorFalso.falhas_propfind, 0)
+
+    def test_listar_erro_claro_depois_das_tentativas(self):
+        self.publicar("2026-10", "Cnaes.zip", b"cnaes")
+        ServidorFalso.falhas_propfind = app.TENTATIVAS
+        with patch.object(app.time, "sleep", lambda _segundos: None):
+            with self.assertRaises(IOError) as contexto:
+                self.rodar(app.listar, "2026-10")
+        self.assertIn("nao consegui listar", str(contexto.exception))
+        self.assertIn("2026-10", str(contexto.exception))
 
 
 if __name__ == "__main__":

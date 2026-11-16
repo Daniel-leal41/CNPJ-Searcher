@@ -402,6 +402,7 @@ class TestDownloadOrquestracao(unittest.TestCase):
         ServidorFalso.arquivos = {}
         ServidorFalso.pastas = set()
         ServidorFalso.requisicoes = []
+        ServidorFalso.falhas_propfind = 0
         self._tmp = tempfile.TemporaryDirectory()
         self.dados = Path(self._tmp.name) / "dados"
         self.pasta = self.dados / "2026-10"
@@ -585,7 +586,8 @@ class TestDownloadOrquestracao(unittest.TestCase):
         self.assertTrue((self.pasta / "Municipios.zip").exists())
         self.assertTrue((self.pasta / "Cnaes.zip").exists())
         self.assertFalse((self.pasta / "Empresas0.zip").exists())
-        self.assertEqual(len(ServidorFalso.requisicoes), 6)  # 3 listagens + 3 GET
+        # O download reutiliza o item listado: so os 3 GET, sem PROPFIND extra.
+        self.assertEqual([r[0] for r in ServidorFalso.requisicoes], ["GET"] * 3)
         self.assertTrue(self.cnae.exists())
         self.assertIn("5611201", self.cnae.read_text(encoding="cp1252"))
 
