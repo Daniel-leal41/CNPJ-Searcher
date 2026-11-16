@@ -1,0 +1,21 @@
+# Dados baixados e bancos sao grandes e regeneraveis.
+dados/
+CSVs/
+CNAE.CNAECSV
+*.part
+*.db
+*.db-*
+*.db.bak-*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Sistema
+.DS_Store
+Thumbs.db

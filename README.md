@@ -29,7 +29,7 @@ Na primeira execução o `iniciar.py`:
 1. descobre o mês mais recente;
 2. lista o que falta e mostra uma estimativa de tempo;
 3. **pergunta antes de baixar** (dá tempo de pegar um café);
-4. baixa somente `Estabelecimentos*.zip` e `Municipios.zip`;
+4. baixa somente `Estabelecimentos*.zip`, `Municipios.zip` e `Cnaes.zip`;
 5. confere tamanho e abertura dos zips;
 6. monta `dados/cnpj-AAAA-MM.db` e cria os índices;
 7. abre a interface de consulta.
@@ -46,8 +46,9 @@ Se um shard novo aparecer no servidor, baixa o que falta e recria o banco.
 | `dados/cnpj-AAAA-MM.json` | estado da preparação (arquivos e linhas) |
 
 O mês de referência (2026-10) tem **73.809.379 estabelecimentos** e ~29 GB de
-banco com índices. `dados/` e `CSVs/` estão no `.gitignore`; não versione os
-dados.
+banco com índices. O `iniciar.py` também atualiza o `CNAE.CNAECSV` na raiz a
+partir do `Cnaes.zip`. `dados/`, `CSVs/` e o `CNAE.CNAECSV` gerado estão no
+`.gitignore`; não versione os dados.
 
 ## Interface
 
@@ -56,7 +57,9 @@ dados.
   intervalo de início de atividade, com e-mail e com telefone.
 - Resultados paginados; exportação do filtro inteiro em CSV `;`/UTF-8 BOM, com
   teto de 200 mil linhas, usando as colunas escolhidas em **Colunas...**.
-- As descrições de CNAE vêm do `CNAE.CNAECSV` na raiz.
+- As descrições de CNAE são extraídas do `Cnaes.zip` para `CNAE.CNAECSV` na
+  raiz. Se já existir um `CNAE.CNAECSV` mais novo que o zip, ele é preservado.
+  O fallback é `CSVs/CNAE.CNAECSV`.
 
 O arquivo de Estabelecimentos não traz razão social; o filtro de nome usa
 `nome_fantasia` (vazio em parte dos registros). Para incluir razão social seria
@@ -95,7 +98,7 @@ python -m cnpjs.carregar --pasta dados/2026-10 \
 | `cnpjs/carregar.py` | CSV direto do zip para SQLite, `municipios` e índices |
 | `cnpjs/interface.py` | interface Tkinter de consulta |
 | `tests/` | testes automatizados, sem rede |
-| `CNAE.CNAECSV` | descrições de CNAE |
+| `CNAE.CNAECSV` | descrições de CNAE (gerado a partir de `Cnaes.zip`; fallback em `CSVs/`) |
 | `pesquisar_csv.py`, `CSVs/` | app legado de pesquisa em CSVs (opcional) |
 
 ## Testes

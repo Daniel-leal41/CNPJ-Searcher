@@ -27,11 +27,11 @@ python -m cnpjs.interface --db dados/cnpj-2026-10.db
 ## Arquitetura
 
 - `iniciar.py`: assistente GUI de primeira execucao. Baixa so
-  `Estabelecimentos*.zip` + `Municipios.zip`, confere os zips, chama
-  `carregar` sem indices e depois `preparar`, grava
-  `dados/cnpj-<mes>.json` e abre a interface em subprocesso. Se o JSON nao
-  bate com os zips locais, renomeia o banco para `.bak-*` e recria (o backup
-  e apagado no sucesso).
+  `Estabelecimentos*.zip`, `Municipios.zip` e `Cnaes.zip`, confere os zips,
+  extrai o CNAE para `CNAE.CNAECSV`, chama `carregar` sem indices e depois
+  `preparar`, grava `dados/cnpj-<mes>.json` e abre a interface em subprocesso.
+  Se o JSON nao bate com os zips locais, renomeia o banco para `.bak-*` e
+  recria (o backup e apagado no sucesso).
 - `cnpjs/baixar.py`: Nextcloud publico via WebDAV (`PROPFIND` + `GET` em
   `/public.php/dav/files/<TOKEN>/...`). `--mes latest` ordena pastas
   `AAAA-MM`; baixa o que falta comparando tamanho; retoma `.part` com `Range`.
@@ -81,6 +81,9 @@ python -m cnpjs.interface --db dados/cnpj-2026-10.db
 - `municipios` tem 5.572 codigos; o CSV `Municipios.zip` traz `codigo;nome`
   (sem UF). A UF vem dos proprios estabelecimentos; por isso `--preparar`
   precisa da tabela `estabelecimentos` ja carregada.
+- `CNAE.CNAECSV` e gerado/atualizado por `iniciar.py` a partir de
+  `Cnaes.zip`; a interface tambem aceita `CSVs/CNAE.CNAECSV` como fallback.
+  Nao versione o arquivo gerado.
 
 ## Armadilhas
 

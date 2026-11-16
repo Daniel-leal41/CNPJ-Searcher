@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -73,7 +74,8 @@ class TestArquivos(unittest.TestCase):
         ]
         nomes = [i["nome"] for i in iniciar.filtrar_necessarios(itens)]
         self.assertEqual(nomes, [
-            "Municipios.zip", "Estabelecimentos2.zip", "Estabelecimentos10.zip"])
+            "Municipios.zip", "Cnaes.zip",
+            "Estabelecimentos2.zip", "Estabelecimentos10.zip"])
 
     def test_filtrar_necessarios_exige_estabelecimentos(self):
         with self.assertRaises(RuntimeError):
@@ -84,13 +86,27 @@ class TestArquivos(unittest.TestCase):
             pasta = Path(tmp)
             (pasta / "Estabelecimentos0.zip").write_bytes(b"x")
             (pasta / "Municipios.zip").write_bytes(b"y")
+            (pasta / "Cnaes.zip").write_bytes(b"c")
             (pasta / "Empresas0.zip").write_bytes(b"z")
             (pasta / "Estabelecimentos1.zip.part").write_bytes(b"w")
             itens = iniciar.itens_locais(pasta)
             self.assertEqual([i["nome"] for i in itens],
-                             ["Municipios.zip", "Estabelecimentos0.zip"])
+                             ["Municipios.zip", "Cnaes.zip", "Estabelecimentos0.zip"])
             self.assertEqual(iniciar.arquivos_locais(pasta),
-                             {"Municipios.zip": 1, "Estabelecimentos0.zip": 1})
+                             {"Municipios.zip": 1, "Cnaes.zip": 1,
+                              "Estabelecimentos0.zip": 1})
+
+    def test_extrair_cnae(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pasta = Path(tmp)
+            destino = pasta / "CNAE.CNAECSV"
+            conteudo = '"5611201";"Restaurantes e similares"\n'.encode("cp1252")
+            with zipfile.ZipFile(pasta / "Cnaes.zip", "w") as zip_arquivo:
+                zip_arquivo.writestr("F.K03200$Z.D61010.CNAECSV", conteudo)
+
+            self.assertTrue(iniciar.extrair_cnae(pasta, destino))
+            self.assertEqual(destino.read_bytes(), conteudo)
+            self.assertFalse(iniciar.extrair_cnae(pasta, destino))  # destino mais novo
 
 
 class TestTexto(unittest.TestCase):
@@ -272,17 +288,22 @@ class TestDownloadOrquestracao(unittest.TestCase):
         self.dados = Path(self._tmp.name) / "dados"
         self.pasta = self.dados / "2026-10"
         self.db = self.dados / "cnpj-2026-10.db"
+        self.cnae = Path(self._tmp.name) / "CNAE.CNAECSV"
         self._patch = patch.object(iniciar, "DADOS", self.dados)
         self._patch.start()
+        self._patch_cnae = patch.object(iniciar, "CNAE", self.cnae)
+        self._patch_cnae.start()
 
         ServidorFalso.pastas.add("2026-10")
         ServidorFalso.arquivos["2026-10/Estabelecimentos1.zip"] = self._zip(
             [linha("00000001", fantasia="PADARIA", uf="SP", municipio="7107")])
         ServidorFalso.arquivos["2026-10/Municipios.zip"] = self._zip(
             None, municipios=[("7107", "SAO PAULO")])
+        ServidorFalso.arquivos["2026-10/Cnaes.zip"] = self._zip_cnae()
         ServidorFalso.arquivos["2026-10/Empresas0.zip"] = b"nao deve ser baixado"
 
     def tearDown(self):
+        self._patch_cnae.stop()
         self._patch.stop()
         self._tmp.cleanup()
 
@@ -299,10 +320,23 @@ class TestDownloadOrquestracao(unittest.TestCase):
         finally:
             caminho.unlink(missing_ok=True)
 
+    @staticmethod
+    def _zip_cnae():
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as arquivo:
+            caminho = Path(arquivo.name)
+        try:
+            with zipfile.ZipFile(caminho, "w") as zip_arquivo:
+                zip_arquivo.writestr(
+                    "F.K03200$Z.D61010.CNAECSV",
+                    '"5611201";"Restaurantes e similares"\n'.encode("cp1252"))
+            return caminho.read_bytes()
+        finally:
+            caminho.unlink(missing_ok=True)
+
     def test_baixa_so_o_necessario_e_monta_o_banco(self):
         itens = iniciar.filtrar_necessarios(baixar.listar("2026-10"))
         self.assertEqual([item["nome"] for item in itens],
-                         ["Municipios.zip", "Estabelecimentos1.zip"])
+                         ["Municipios.zip", "Cnaes.zip", "Estabelecimentos1.zip"])
         faltam, faltam_bytes = iniciar.calcular_faltantes(self.pasta, itens)
         ServidorFalso.requisicoes = []
         estado = {
@@ -334,8 +368,11 @@ class TestDownloadOrquestracao(unittest.TestCase):
 
         self.assertTrue((self.pasta / "Estabelecimentos1.zip").exists())
         self.assertTrue((self.pasta / "Municipios.zip").exists())
+        self.assertTrue((self.pasta / "Cnaes.zip").exists())
         self.assertFalse((self.pasta / "Empresas0.zip").exists())
-        self.assertEqual(len(ServidorFalso.requisicoes), 4)  # 2 listagens + 2 GET
+        self.assertEqual(len(ServidorFalso.requisicoes), 6)  # 3 listagens + 3 GET
+        self.assertTrue(self.cnae.exists())
+        self.assertIn("5611201", self.cnae.read_text(encoding="cp1252"))
 
         con = sqlite3.connect(self.db)
         try:

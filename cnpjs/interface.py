@@ -172,15 +172,18 @@ def filtrar_cnaes(cnaes, termo=""):
 
 
 def carregar_cnaes():
-    """Codigo -> descricao, a partir do CNAE.CNAECSV na raiz do projeto."""
-    caminho = Path(__file__).resolve().parent.parent / "CNAE.CNAECSV"
-    mapa = {}
-    if caminho.exists():
+    """Codigo -> descricao, do CNAE.CNAECSV na raiz ou em CSVs/ (fallback)."""
+    raiz = Path(__file__).resolve().parent.parent
+    for caminho in (raiz / "CNAE.CNAECSV", raiz / "CSVs" / "CNAE.CNAECSV"):
+        if not caminho.exists():
+            continue
+        mapa = {}
         with open(caminho, encoding="cp1252", newline="") as arquivo:
             for linha in csv.reader(arquivo, delimiter=";", quotechar='"'):
                 if len(linha) >= 2:
                     mapa[linha[0].strip()] = linha[1].strip()
-    return mapa
+        return mapa
+    return {}
 
 
 def carregar_municipios(con):

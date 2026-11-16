@@ -48,6 +48,7 @@ from cnpjs import baixar, carregar
 
 DADOS = RAIZ / "dados"
 CNAE = RAIZ / "CNAE.CNAECSV"
+CNAE_FALLBACK = RAIZ / "CSVs" / "CNAE.CNAECSV"
 
 # Estimativas conservadoras, medidas no servidor da Receita e neste projeto.
 MBPS = 1.4                    # ~1,4 MB/s por conexao
@@ -96,16 +97,22 @@ def ordem_arquivo(nome):
     return int(numero.group(1)) if numero else 0
 
 
+def _ordem_necessario(nome):
+    if nome == "Municipios.zip":
+        return (0, 0)
+    if nome == "Cnaes.zip":
+        return (1, 0)
+    return (2, ordem_arquivo(nome))
+
+
 def filtrar_necessarios(itens):
-    """Somente o que o banco/interface usam: Estabelecimentos + Municipios."""
+    """Somente o que o banco/interface usam: Estabelecimentos, Municipios e Cnaes."""
     necessarios = [
         item for item in itens
-        if item["nome"] == "Municipios.zip"
+        if item["nome"] in ("Municipios.zip", "Cnaes.zip")
         or (item["nome"].startswith("Estabelecimentos") and item["nome"].endswith(".zip"))
     ]
-    necessarios.sort(key=lambda item: (
-        0 if item["nome"] == "Municipios.zip" else 1, ordem_arquivo(item["nome"])
-    ))
+    necessarios.sort(key=lambda item: _ordem_necessario(item["nome"]))
     if not any(item["nome"].startswith("Estabelecimentos") for item in necessarios):
         raise RuntimeError("o mes nao tem nenhum Estabelecimentos*.zip")
     return necessarios
@@ -118,12 +125,10 @@ def itens_locais(pasta):
     for caminho in pasta.iterdir():
         if not caminho.is_file():
             continue
-        if caminho.name == "Municipios.zip" or (
+        if caminho.name in ("Municipios.zip", "Cnaes.zip") or (
                 caminho.name.startswith("Estabelecimentos") and caminho.name.endswith(".zip")):
             itens.append({"nome": caminho.name, "tamanho": caminho.stat().st_size})
-    return sorted(itens, key=lambda item: (
-        0 if item["nome"] == "Municipios.zip" else 1, ordem_arquivo(item["nome"])
-    ))
+    return sorted(itens, key=lambda item: _ordem_necessario(item["nome"]))
 
 
 def arquivos_locais(pasta):
@@ -180,6 +185,37 @@ def salvar_estado(mes, arquivos, linhas, concluido=True, carregando=False):
         json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
     temporario.replace(caminho)
     return dados
+
+
+def extrair_cnae(pasta, destino):
+    """Extrai o CSV de dentro de Cnaes.zip para CNAE.CNAECSV.
+
+    Nao sobrescreve um CNAE.CNAECSV mais novo que o zip. O arquivo extraido
+    mantem os bytes originais (latin-1/cp1252), que e o que a interface le.
+    """
+    caminho = Path(pasta) / "Cnaes.zip"
+    if not caminho.exists():
+        return False
+    if destino.exists() and destino.stat().st_mtime >= caminho.stat().st_mtime:
+        return False
+    try:
+        with zipfile.ZipFile(caminho) as zip_arquivo:
+            membros = [nome for nome in zip_arquivo.namelist() if not nome.endswith("/")]
+            if not membros:
+                return False
+            dados = zip_arquivo.read(membros[0])
+    except (OSError, zipfile.BadZipFile):
+        return False
+    if not dados.strip() or b";" not in dados[:1000]:
+        return False
+    try:
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        temporario = destino.with_suffix(destino.suffix + ".tmp")
+        temporario.write_bytes(dados)
+        temporario.replace(destino)
+    except OSError:
+        return False
+    return True
 
 
 def banco_desatualizado(estado, arquivos, db_ok):
@@ -342,9 +378,12 @@ def avaliar():
     else:
         mensagens.append(f"Espaco livre: {livre:.0f} GB.")
 
-    if not CNAE.exists():
+    if extrair_cnae(pasta, CNAE):
+        mensagens.append("CNAE.CNAECSV atualizado a partir de Cnaes.zip.")
+    if not CNAE.exists() and not CNAE_FALLBACK.exists() and not (
+            pasta / "Cnaes.zip").exists():
         mensagens.append(
-            "CNAE.CNAECSV ausente na raiz: a interface nao mostrara descricoes de CNAE.")
+            "Cnaes.zip/CNAE.CNAECSV ausente: a interface nao mostrara descricoes de CNAE.")
     if not (pasta / "Municipios.zip").exists() and not falta_municipios:
         mensagens.append(
             "Municipios.zip ausente: o filtro de municipio usara apenas o codigo.")
@@ -456,6 +495,8 @@ def executar(estado, baixar_agora, fila):
 
         fila.put(("status", "Conferindo os arquivos baixados..."))
         verificar_zips(pasta, itens_verificar, estado["remoto"], fila)
+        if extrair_cnae(pasta, CNAE):
+            fila.put(("log", "CNAE.CNAECSV atualizado a partir de Cnaes.zip."))
 
         arquivos = arquivos_locais(pasta)
         estado_db = ler_estado(mes)
